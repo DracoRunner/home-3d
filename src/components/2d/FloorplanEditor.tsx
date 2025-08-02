@@ -40,8 +40,67 @@ interface FloorplanEditorProps {
 }
 
 export default function FloorplanEditor({ className }: FloorplanEditorProps) {
+  // Viewport state and handlers
+  const { viewport, setViewport, handleZoom, handlePan } = useViewport();
+
+  // Helper: format cm to feet/inches string
+  function formatFeetInches(cm: number) {
+    const inchesTotal = cm / 2.54;
+    const feet = Math.floor(inchesTotal / 12);
+    const inches = Math.round(inchesTotal % 12);
+    return `${feet}'${inches}\"`;
+  }
+
+  // Helper: parse feet/inches string to cm
+  function parseFeetInches(input: string): number | null {
+    // Accepts 12'6", 12' 6", 12.5', 150" etc.
+    const ftIn = input.match(/^(\d+)'\s*(\d+)?"?$/); // 12'6"
+    if (ftIn) {
+      const feet = parseInt(ftIn[1], 10);
+      const inches = ftIn[2] ? parseInt(ftIn[2], 10) : 0;
+      return (feet * 12 + inches) * 2.54;
+    }
+    const ftDec = input.match(/^(\d+(?:\.\d+)?)'/); // 12.5'
+    if (ftDec) {
+      return parseFloat(ftDec[1]) * 12 * 2.54;
+    }
+    const inches = input.match(/^(\d+(?:\.\d+)?)"$/); // 150"
+    if (inches) {
+      return parseFloat(inches[1]) * 2.54;
+    }
+    return null;
+  }
+
+  // Drawing function for grid
+  const drawGrid = useCallback((ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    // Adjust grid spacing based on zoom level for better visibility
+    const scaledGridSpacing = GRID_SPACING * viewport.zoom;
+    const offsetX = (-viewport.originX) % scaledGridSpacing;
+    const offsetY = (-viewport.originY) % scaledGridSpacing;
+    ctx.strokeStyle = GRID_COLOR;
+    ctx.lineWidth = GRID_WIDTH;
+    // Only draw grid if spacing is reasonable (not too dense)
+    if (scaledGridSpacing > 5) {
+      // Vertical lines
+      for (let x = offsetX; x <= width; x += scaledGridSpacing) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      // Horizontal lines
+      for (let y = offsetY; y <= height; y += scaledGridSpacing) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+    }
+  }, [viewport.originX, viewport.originY, viewport.zoom]);
   // Track which wall is being dragged in MOVE mode
   const [draggedWallId, setDraggedWallId] = useState<string | null>(null);
+  // Track which wall is selected for editing/highlight
+  const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
   // State for editing wall label
   const [editingWallId, setEditingWallId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -67,8 +126,6 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
   const walls = Object.values(floorplan.walls);
 
 
-  // Viewport state and handlers
-  const { viewport, setViewport, handleZoom, handlePan } = useViewport();
 
   // Mouse state and setter
   const { mouseState, setMouseState } = useMouseState();
@@ -137,10 +194,17 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     const canvasY = event.clientY - rect.top;
     const world = canvasToWorld(canvasX, canvasY);
 
+    // Always allow wall selection by click (even outside MOVE mode)
+    const clickedCorner = findCornerAt(world.x, world.y);
+    const clickedWall = !clickedCorner ? findWallAt(world.x, world.y) : null;
+    if (clickedWall) {
+      setSelectedWallId(clickedWall.id);
+    } else {
+      setSelectedWallId(null);
+    }
+
     // In MOVE mode, set active wall if clicking on a wall
     if (editorMode === EditorMode.MOVE) {
-      const clickedCorner = findCornerAt(world.x, world.y);
-      const clickedWall = !clickedCorner ? findWallAt(world.x, world.y) : null;
       if (clickedWall) {
         setActiveWall(clickedWall);
         setDraggedWallId(clickedWall.id);
@@ -404,64 +468,6 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
   }, [handleZoom, canvasToWorld]);
 
   // Drawing functions
-  const drawGrid = useCallback((ctx: CanvasRenderingContext2D, width: number, height: number) => {
-    // Adjust grid spacing based on zoom level for better visibility
-    const scaledGridSpacing = GRID_SPACING * viewport.zoom;
-    const offsetX = (-viewport.originX) % scaledGridSpacing;
-    const offsetY = (-viewport.originY) % scaledGridSpacing;
-    
-    ctx.strokeStyle = GRID_COLOR;
-    ctx.lineWidth = GRID_WIDTH;
-    
-    // Only draw grid if spacing is reasonable (not too dense)
-    if (scaledGridSpacing > 5) {
-      // Vertical lines
-      for (let x = offsetX; x <= width; x += scaledGridSpacing) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.stroke();
-      }
-      
-      // Horizontal lines
-      for (let y = offsetY; y <= height; y += scaledGridSpacing) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-    }
-  }, [viewport.originX, viewport.originY, viewport.zoom]);
-
-  // Helper: format cm to feet/inches string
-  function formatFeetInches(cm: number) {
-    const inchesTotal = cm / 2.54;
-    const feet = Math.floor(inchesTotal / 12);
-    const inches = Math.round(inchesTotal % 12);
-    return `${feet}'${inches}\"`;
-  }
-
-  // Helper: parse feet/inches string to cm
-  function parseFeetInches(input: string): number | null {
-    // Accepts 12'6", 12' 6", 12.5', 150" etc.
-    const ftIn = input.match(/^(\d+)'\s*(\d+)?\"?$/); // 12'6"
-    if (ftIn) {
-      const feet = parseInt(ftIn[1], 10);
-      const inches = ftIn[2] ? parseInt(ftIn[2], 10) : 0;
-      return (feet * 12 + inches) * 2.54;
-    }
-    const ftDec = input.match(/^(\d+(?:\.\d+)?)'/); // 12.5'
-    if (ftDec) {
-      return parseFloat(ftDec[1]) * 12 * 2.54;
-    }
-    const inches = input.match(/^(\d+(?:\.\d+)?)\"$/); // 150"
-    if (inches) {
-      return parseFloat(inches[1]) * 2.54;
-    }
-    return null;
-  }
-
-  // Enhanced wall drawing: double lines, shadow, dimension label
   const drawWall = useCallback((ctx: CanvasRenderingContext2D, wall: Wall) => {
     const startCorner = corners.find(c => c.id === wall.startCorner);
     const endCorner = corners.find(c => c.id === wall.endCorner);
@@ -471,6 +477,7 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     const end = worldToCanvas(endCorner.x, endCorner.y);
     const isHover = wall === activeWall;
     const isDelete = editorMode === EditorMode.DELETE && isHover;
+    const isSelected = wall.id === selectedWallId;
 
     // Wall thickness in canvas px (scale with zoom)
     const wallThicknessCm = wall.thickness || 10;
@@ -497,7 +504,13 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     ctx.stroke();
 
     // Main fill (between double lines)
-    ctx.strokeStyle = isDelete ? DELETE_COLOR : (isHover ? WALL_COLOR_HOVER : WALL_COLOR);
+    ctx.strokeStyle = isDelete
+      ? DELETE_COLOR
+      : isSelected
+        ? '#f59e42' // orange highlight for selected
+        : isHover
+          ? WALL_COLOR_HOVER
+          : WALL_COLOR;
     ctx.lineWidth = wallThicknessPx;
     ctx.beginPath();
     ctx.moveTo(start.x, start.y);
@@ -551,7 +564,7 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     ctx.strokeText(label, labelX, labelY);
     ctx.fillText(label, labelX, labelY);
     ctx.restore();
-  }, [corners, worldToCanvas, activeWall, editorMode, viewport.pixelsPerCm]);
+  }, [corners, worldToCanvas, activeWall, editorMode, viewport.pixelsPerCm, selectedWallId, editingWallId, editPos]);
 
   const drawCorner = useCallback((ctx: CanvasRenderingContext2D, corner: Corner) => {
     const pos = worldToCanvas(corner.x, corner.y);
