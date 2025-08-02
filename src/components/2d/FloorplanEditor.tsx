@@ -4,6 +4,10 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useFloorplanStore } from '@/stores/floorplan-store';
 import { Point2D, Corner, Wall, EditorMode, ViewMode } from '@/types';
 import { distance, snapToGrid } from '@/lib/utils/math';
+import { useViewport } from '@/lib/hooks/useViewport';
+import { useMouseState } from '@/lib/hooks/useMouseState';
+import { useDrawingState } from '@/lib/hooks/useDrawingState';
+import { useHitTest } from '@/lib/hooks/useHitTest';
 
 // Configuration constants (based on blueprint3d)
 const GRID_SPACING = 20; // pixels
@@ -55,36 +59,22 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     moveCorner
   } = useFloorplanStore();
 
-  // Viewport state (based on blueprint3d's coordinate system)
-  const [viewport, setViewport] = useState<FloorplannerViewport>({
-    originX: 0,
-    originY: 0,
-    zoom: DEFAULT_ZOOM,
-    cmPerPixel: 2.0, // 30.48 cm per foot * (1/15 pixels per foot) from blueprint3d
-    pixelsPerCm: 0.5
-  });
 
-  // Mouse state
-  const [mouseState, setMouseState] = useState({
-    isDown: false,
-    hasMoved: false,
-    lastX: 0,
-    lastY: 0,
-    currentX: 0,
-    currentY: 0,
-    worldX: 0,
-    worldY: 0
-  });
+  // Viewport state and handlers
+  const { viewport, setViewport, handleZoom, handlePan } = useViewport();
 
-  // Drawing state for DRAW mode
-  const [drawingState, setDrawingState] = useState<{
-    lastNode: Corner | null;
-    targetX: number;
-    targetY: number;
-  }>({
-    lastNode: null,
-    targetX: 0,
-    targetY: 0
+  // Mouse state and setter
+  const { mouseState, setMouseState } = useMouseState();
+
+
+  // Drawing state and snapping logic
+  const { drawingState, setDrawingState, updateTarget } = useDrawingState({
+    editorMode,
+    viewportCmPerPixel: viewport.cmPerPixel,
+    mouseWorldX: mouseState.worldX,
+    mouseWorldY: mouseState.worldY,
+    SNAP_TOLERANCE,
+    GRID_SPACING
   });
 
   // Convert canvas coordinates to world coordinates
@@ -101,79 +91,11 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     return { x: canvasX, y: canvasY };
   }, [viewport]);
 
-  // Find corner at position
-  const findCornerAt = useCallback((worldX: number, worldY: number, tolerance = 15): Corner | null => {
-    return corners.find(corner => 
-      distance({ x: worldX, y: worldY }, corner) < tolerance * viewport.cmPerPixel
-    ) || null;
-  }, [corners, viewport.cmPerPixel]);
 
-  // Find wall at position
-  const findWallAt = useCallback((worldX: number, worldY: number, tolerance = 15): Wall | null => {
-    for (const wall of walls) {
-      const start = corners.find(c => c.id === wall.startCorner);
-      const end = corners.find(c => c.id === wall.endCorner);
-      if (!start || !end) continue;
+  // Hit-testing hooks for corners and walls
+  const { findCornerAt, findWallAt } = useHitTest(corners, walls, viewport.cmPerPixel);
 
-      // Calculate distance from point to line segment
-      const A = worldX - start.x;
-      const B = worldY - start.y;
-      const C = end.x - start.x;
-      const D = end.y - start.y;
-
-      const dot = A * C + B * D;
-      const lenSq = C * C + D * D;
-      if (lenSq === 0) continue;
-
-      const param = dot / lenSq;
-      let xx, yy;
-
-      if (param < 0) {
-        xx = start.x;
-        yy = start.y;
-      } else if (param > 1) {
-        xx = end.x;
-        yy = end.y;
-      } else {
-        xx = start.x + param * C;
-        yy = start.y + param * D;
-      }
-
-      const dx = worldX - xx;
-      const dy = worldY - yy;
-      const distToLine = Math.sqrt(dx * dx + dy * dy);
-
-      if (distToLine < tolerance * viewport.cmPerPixel) {
-        return wall;
-      }
-    }
-    return null;
-  }, [walls, corners, viewport.cmPerPixel]);
-
-  // Update drawing target with snapping
-  const updateTarget = useCallback(() => {
-    let targetX = mouseState.worldX;
-    let targetY = mouseState.worldY;
-
-    if (editorMode === EditorMode.DRAW && drawingState.lastNode) {
-      // Snap to axes
-      if (Math.abs(mouseState.worldX - drawingState.lastNode.x) < SNAP_TOLERANCE) {
-        targetX = drawingState.lastNode.x;
-      }
-      if (Math.abs(mouseState.worldY - drawingState.lastNode.y) < SNAP_TOLERANCE) {
-        targetY = drawingState.lastNode.y;
-      }
-    }
-
-    // Snap to grid
-    const gridSnap = snapToGrid({ x: targetX, y: targetY }, GRID_SPACING * viewport.cmPerPixel);
-    
-    setDrawingState(prev => ({
-      ...prev,
-      targetX: gridSnap.x,
-      targetY: gridSnap.y
-    }));
-  }, [mouseState.worldX, mouseState.worldY, editorMode, drawingState.lastNode, viewport.cmPerPixel]);
+  // ...existing code...
 
   // Handle mouse down
   const handleMouseDown = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -231,13 +153,7 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
       if (prev.isDown && !activeCorner && !activeWall) {
         const deltaX = event.clientX - prev.lastX;
         const deltaY = event.clientY - prev.lastY;
-        
-        setViewport(prevViewport => ({
-          ...prevViewport,
-          originX: prevViewport.originX - deltaX,
-          originY: prevViewport.originY - deltaY
-        }));
-
+        handlePan(deltaX, deltaY);
         newState.lastX = event.clientX;
         newState.lastY = event.clientY;
       }
@@ -245,16 +161,12 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
       // Handle corner/wall dragging in MOVE mode
       if (editorMode === EditorMode.MOVE && prev.isDown) {
         if (activeCorner) {
-          // Move corner
           moveCorner(activeCorner.id, world.x, world.y);
         } else if (activeWall) {
-          // Move wall (relative movement)
           const deltaX = (event.clientX - prev.lastX) * viewport.cmPerPixel;
           const deltaY = (event.clientY - prev.lastY) * viewport.cmPerPixel;
-          
           const startCorner = corners.find(c => c.id === activeWall.startCorner);
           const endCorner = corners.find(c => c.id === activeWall.endCorner);
-          
           if (startCorner && endCorner) {
             const updatedCorners = corners.map(corner => {
               if (corner.id === activeWall!.startCorner || corner.id === activeWall!.endCorner) {
@@ -268,12 +180,10 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
             });
             useFloorplanStore.setState({ corners: updatedCorners });
           }
-
           newState.lastX = event.clientX;
           newState.lastY = event.clientY;
         }
       }
-
       return newState;
     });
 
@@ -281,7 +191,6 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     if (!mouseState.isDown) {
       const hoverCorner = findCornerAt(world.x, world.y);
       const hoverWall = hoverCorner ? null : findWallAt(world.x, world.y);
-      
       if (hoverCorner !== activeCorner) {
         setActiveCorner(hoverCorner);
       }
@@ -294,7 +203,7 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     if (editorMode === EditorMode.DRAW || (editorMode === EditorMode.MOVE && mouseState.isDown)) {
       updateTarget();
     }
-  }, [canvasToWorld, editorMode, activeCorner, activeWall, corners, findCornerAt, findWallAt, mouseState.isDown, setActiveCorner, setActiveWall, updateTarget, viewport.cmPerPixel]);
+  }, [canvasToWorld, editorMode, activeCorner, activeWall, corners, findCornerAt, findWallAt, mouseState.isDown, setActiveCorner, setActiveWall, updateTarget, viewport.cmPerPixel, handlePan, moveCorner]);
 
   // Handle mouse up
   const handleMouseUp = useCallback(() => {
@@ -335,51 +244,12 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     // Handle mouse wheel for zooming
   const handleWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
-    
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    
-    // Get mouse position relative to canvas
     const mouseX = event.clientX - rect.left;
     const mouseY = event.clientY - rect.top;
-    
-    // Convert to world coordinates before zoom
-    const worldBefore = canvasToWorld(mouseX, mouseY);
-    
-    // Calculate zoom change - make it more responsive
-    const zoomFactor = event.deltaY > 0 ? 0.8 : 1.25; // More aggressive zoom
-    const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewport.zoom * zoomFactor));
-    
-    console.log('Zoom:', {
-      deltaY: event.deltaY,
-      oldZoom: viewport.zoom,
-      newZoom: newZoom,
-      zoomFactor: zoomFactor
-    });
-    
-    // Update viewport with zoom-to-mouse-position
-    setViewport(prev => {
-      const newCmPerPixel = 2.0 / newZoom;
-      const newPixelsPerCm = newZoom / 2.0;
-      
-      // Convert world coordinates back to canvas coordinates with new zoom
-      const newCanvasX = (worldBefore.x - prev.originX * prev.cmPerPixel) * newPixelsPerCm;
-      const newCanvasY = (worldBefore.y - prev.originY * prev.cmPerPixel) * newPixelsPerCm;
-      
-      // Calculate origin adjustment to keep mouse position consistent
-      const originAdjustX = (newCanvasX - mouseX) / newPixelsPerCm;
-      const originAdjustY = (newCanvasY - mouseY) / newPixelsPerCm;
-      
-      return {
-        ...prev,
-        zoom: newZoom,
-        cmPerPixel: newCmPerPixel,
-        pixelsPerCm: newPixelsPerCm,
-        originX: prev.originX + originAdjustX,
-        originY: prev.originY + originAdjustY
-      };
-    });
-  }, [viewport, canvasToWorld]);
+    handleZoom(event.deltaY, mouseX, mouseY, canvasToWorld);
+  }, [handleZoom, canvasToWorld]);
 
   // Drawing functions
   const drawGrid = useCallback((ctx: CanvasRenderingContext2D, width: number, height: number) => {

@@ -1,13 +1,11 @@
 'use client';
 
+
 import { ViewMode } from '@/types';
+import { useFloorplanStore } from '@/stores/floorplan-store';
 
-interface ToolbarProps {
-  viewMode: ViewMode;
-  onViewModeChange: (mode: ViewMode) => void;
-}
-
-export default function Toolbar({ viewMode, onViewModeChange }: ToolbarProps) {
+export default function Toolbar() {
+  const { viewMode, setViewMode } = useFloorplanStore();
   return (
     <div className="toolbar">
       <div className="flex items-center gap-4">
@@ -16,19 +14,19 @@ export default function Toolbar({ viewMode, onViewModeChange }: ToolbarProps) {
           <span className="text-sm font-medium text-gray-700">View:</span>
           <button
             className={`tool-button ${viewMode === ViewMode.FLOORPLAN_2D ? 'active' : ''}`}
-            onClick={() => onViewModeChange(ViewMode.FLOORPLAN_2D)}
+            onClick={() => setViewMode(ViewMode.FLOORPLAN_2D)}
           >
             2D Plan
           </button>
           <button
             className={`tool-button ${viewMode === ViewMode.DESIGN_3D ? 'active' : ''}`}
-            onClick={() => onViewModeChange(ViewMode.DESIGN_3D)}
+            onClick={() => setViewMode(ViewMode.DESIGN_3D)}
           >
             3D View
           </button>
           <button
             className={`tool-button ${viewMode === ViewMode.BOTH ? 'active' : ''}`}
-            onClick={() => onViewModeChange(ViewMode.BOTH)}
+            onClick={() => setViewMode(ViewMode.BOTH)}
           >
             Split View
           </button>
