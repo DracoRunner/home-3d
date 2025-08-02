@@ -18,7 +18,7 @@ export default function Home() {
       {/* Main content */}
       <div className="flex-1 flex flex-col">
         {/* Toolbar */}
-        <Toolbar viewMode={viewMode} onViewModeChange={setViewMode} />
+        <Toolbar />
         
         {/* Editor area */}
         <div className="flex-1 relative">
