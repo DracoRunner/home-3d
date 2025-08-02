@@ -1,5 +1,47 @@
-import DesignStudio from '@/components/DesignStudio';
+'use client';
+
+import { useState } from 'react';
+import { ViewMode } from '@/types';
+import FloorplanEditor from '@/components/2d/FloorplanEditor';
+import ThreeViewer from '@/components/3d/ThreeViewer';
+import Sidebar from '@/components/ui/Sidebar';
+import Toolbar from '@/components/ui/Toolbar';
 
 export default function Home() {
-  return <DesignStudio />;
+  const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.FLOORPLAN_2D);
+
+  return (
+    <div className="flex h-screen bg-gray-100">
+      {/* Sidebar */}
+      <Sidebar />
+      
+      {/* Main content */}
+      <div className="flex-1 flex flex-col">
+        {/* Toolbar */}
+        <Toolbar viewMode={viewMode} onViewModeChange={setViewMode} />
+        
+        {/* Editor area */}
+        <div className="flex-1 relative">
+          {viewMode === ViewMode.FLOORPLAN_2D && (
+            <FloorplanEditor />
+          )}
+          
+          {viewMode === ViewMode.DESIGN_3D && (
+            <ThreeViewer />
+          )}
+          
+          {viewMode === ViewMode.BOTH && (
+            <div className="flex h-full">
+              <div className="flex-1 border-r">
+                <FloorplanEditor />
+              </div>
+              <div className="flex-1">
+                <ThreeViewer />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
