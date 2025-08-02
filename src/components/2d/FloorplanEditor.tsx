@@ -40,6 +40,8 @@ interface FloorplanEditorProps {
 }
 
 export default function FloorplanEditor({ className }: FloorplanEditorProps) {
+  // Track which wall is being dragged in MOVE mode
+  const [draggedWallId, setDraggedWallId] = useState<string | null>(null);
   // State for editing wall label
   const [editingWallId, setEditingWallId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -116,7 +118,13 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
 
 
   // Hit-testing hooks for corners and walls
-  const { findCornerAt, findWallAt } = useHitTest(corners, walls, viewport.cmPerPixel);
+  // For MOVE mode, use a larger tolerance for wall hit-test to match visible thickness (in px, not cm)
+  const wallHitTolerance = editorMode === EditorMode.MOVE ? Math.max(16, 2 * WALL_WIDTH_HOVER) : 15;
+  const { findCornerAt, findWallAt: _findWallAt } = useHitTest(corners, walls, viewport.cmPerPixel);
+  // Custom wall hit-test for MOVE mode
+  const findWallAt = useCallback((x: number, y: number) => {
+    return _findWallAt(x, y, wallHitTolerance);
+  }, [_findWallAt, wallHitTolerance]);
 
   // ...existing code...
 
@@ -128,6 +136,25 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
     const canvasX = event.clientX - rect.left;
     const canvasY = event.clientY - rect.top;
     const world = canvasToWorld(canvasX, canvasY);
+
+    // In MOVE mode, set active wall if clicking on a wall
+    if (editorMode === EditorMode.MOVE) {
+      const clickedCorner = findCornerAt(world.x, world.y);
+      const clickedWall = !clickedCorner ? findWallAt(world.x, world.y) : null;
+      if (clickedWall) {
+        setActiveWall(clickedWall);
+        setDraggedWallId(clickedWall.id);
+        setActiveCorner(null);
+      } else if (clickedCorner) {
+        setActiveCorner(clickedCorner);
+        setActiveWall(null);
+        setDraggedWallId(null);
+      } else {
+        setActiveWall(null);
+        setActiveCorner(null);
+        setDraggedWallId(null);
+      }
+    }
 
     setMouseState(prev => ({
       ...prev,
@@ -141,6 +168,23 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
       worldY: world.y
     }));
 
+    // Allow starting a new wall from any existing corner in DRAW mode
+    if (editorMode === EditorMode.DRAW) {
+      const clickedCorner = findCornerAt(world.x, world.y);
+      if (!drawingState.lastNode && clickedCorner) {
+        // Set lastNode and firstCorner, but also set a flag to indicate drawing has started
+        setDrawingState({
+          lastNode: clickedCorner,
+          targetX: clickedCorner.x,
+          targetY: clickedCorner.y,
+          firstCorner: clickedCorner,
+          // @ts-ignore
+          drawingStarted: true
+        });
+        // Do not return here; allow mouse up to process this as a valid first click
+      }
+    }
+
     // Handle different editor modes
     if (editorMode === EditorMode.DELETE) {
       if (activeCorner) {
@@ -151,7 +195,7 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
         setActiveWall(null);
       }
     }
-  }, [canvasToWorld, editorMode, activeCorner, activeWall, removeCorner, removeWall, setActiveCorner, setActiveWall]);
+  }, [canvasToWorld, editorMode, activeCorner, activeWall, removeCorner, removeWall, setActiveCorner, setActiveWall, drawingState.lastNode, findCornerAt, findWallAt]);
 
   // Handle mouse move
   const handleMouseMove = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -185,32 +229,64 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
       if (editorMode === EditorMode.MOVE && prev.isDown) {
         if (activeCorner) {
           moveCorner(activeCorner.id, world.x, world.y);
-        } else if (activeWall) {
-          const deltaX = (event.clientX - prev.lastX) * viewport.cmPerPixel;
-          const deltaY = (event.clientY - prev.lastY) * viewport.cmPerPixel;
-          const startCorner = corners.find(c => c.id === activeWall.startCorner);
-          const endCorner = corners.find(c => c.id === activeWall.endCorner);
-          if (startCorner && endCorner) {
-            const updatedCorners = corners.map(corner => {
-              if (corner.id === activeWall!.startCorner || corner.id === activeWall!.endCorner) {
-                return {
-                  ...corner,
-                  x: corner.x + deltaX,
-                  y: corner.y + deltaY
+        } else if (draggedWallId) {
+          const wall = walls.find(w => w.id === draggedWallId);
+          if (wall) {
+            const deltaX = (event.clientX - prev.lastX) * viewport.cmPerPixel;
+            const deltaY = (event.clientY - prev.lastY) * viewport.cmPerPixel;
+            const startCorner = corners.find(c => c.id === wall.startCorner);
+            const endCorner = corners.find(c => c.id === wall.endCorner);
+            if (startCorner && endCorner) {
+              // Log the intended new positions for debugging
+              console.log('[WALL MOVE]', {
+                wallId: wall.id,
+                startCorner: {
+                  id: startCorner.id,
+                  from: { x: startCorner.x, y: startCorner.y },
+                  to: { x: startCorner.x + deltaX, y: startCorner.y + deltaY }
+                },
+                endCorner: {
+                  id: endCorner.id,
+                  from: { x: endCorner.x, y: endCorner.y },
+                  to: { x: endCorner.x + deltaX, y: endCorner.y + deltaY }
+                },
+                deltaX,
+                deltaY
+              });
+              // Move only the two corners of the dragged wall by the delta
+              const updatedCornersObj = { ...floorplan.corners };
+              if (updatedCornersObj[wall.startCorner]) {
+                updatedCornersObj[wall.startCorner] = {
+                  ...updatedCornersObj[wall.startCorner],
+                  x: updatedCornersObj[wall.startCorner].x + deltaX,
+                  y: updatedCornersObj[wall.startCorner].y + deltaY
                 };
               }
-              return corner;
-            });
-            useFloorplanStore.setState({ corners: updatedCorners });
+              if (updatedCornersObj[wall.endCorner]) {
+                updatedCornersObj[wall.endCorner] = {
+                  ...updatedCornersObj[wall.endCorner],
+                  x: updatedCornersObj[wall.endCorner].x + deltaX,
+                  y: updatedCornersObj[wall.endCorner].y + deltaY
+                };
+              }
+              useFloorplanStore.setState(state => ({
+                floorplan: {
+                  ...state.floorplan,
+                  corners: updatedCornersObj
+                }
+              }));
+              // Log the updated state for debugging
+              console.log('[WALL MOVE][UPDATED STATE]', updatedCornersObj);
+            }
+            newState.lastX = event.clientX;
+            newState.lastY = event.clientY;
           }
-          newState.lastX = event.clientX;
-          newState.lastY = event.clientY;
         }
       }
       return newState;
     });
 
-    // Update hover states
+    // Update hover states and set active wall for MOVE mode
     if (!mouseState.isDown) {
       const hoverCorner = findCornerAt(world.x, world.y);
       const hoverWall = hoverCorner ? null : findWallAt(world.x, world.y);
@@ -219,6 +295,12 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
       }
       if (hoverWall !== activeWall && !hoverCorner) {
         setActiveWall(hoverWall);
+      }
+      // Change cursor to pointer if hovering wall in MOVE mode
+      if (editorMode === EditorMode.MOVE && hoverWall) {
+        if (canvasRef.current) canvasRef.current.style.cursor = 'grab';
+      } else if (canvasRef.current) {
+        canvasRef.current.style.cursor = editorMode === EditorMode.MOVE ? 'default' : 'crosshair';
       }
     }
 
@@ -231,20 +313,32 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
   // Handle mouse up
   const handleMouseUp = useCallback(() => {
     if (editorMode === EditorMode.DRAW && !mouseState.hasMoved) {
+      const clickedCorner = findCornerAt(drawingState.targetX, drawingState.targetY);
       // Check if user clicked on the first point to close the room
       const isClosing = drawingState.lastNode && drawingState.firstCorner &&
+        clickedCorner && clickedCorner.id === drawingState.firstCorner.id &&
         distance({ x: drawingState.targetX, y: drawingState.targetY }, drawingState.firstCorner) < SNAP_TOLERANCE;
 
       if (!drawingState.lastNode) {
         // First point: create and remember as firstCorner
-        const newCorner: Corner = {
-          id: `corner-${Date.now()}`,
-          x: drawingState.targetX,
-          y: drawingState.targetY,
-          adjacentWalls: []
-        };
-        addCorner(newCorner);
-        setDrawingState(prev => ({ ...prev, lastNode: newCorner, firstCorner: newCorner }));
+        if (clickedCorner) {
+          // If user clicks an existing corner as first point, set as lastNode and firstCorner, but do not return; allow next click to create wall
+          setDrawingState({
+            lastNode: clickedCorner,
+            targetX: clickedCorner.x,
+            targetY: clickedCorner.y,
+            firstCorner: clickedCorner
+          });
+        } else {
+          const newCorner: Corner = {
+            id: `corner-${Date.now()}`,
+            x: drawingState.targetX,
+            y: drawingState.targetY,
+            adjacentWalls: []
+          };
+          addCorner(newCorner);
+          setDrawingState({ lastNode: newCorner, targetX: newCorner.x, targetY: newCorner.y, firstCorner: newCorner });
+        }
       } else if (isClosing && drawingState.firstCorner) {
         // Closing the room: add wall to firstCorner, finish, and exit DRAW mode
         const newWall: Wall = {
@@ -255,27 +349,40 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
           height: 250
         };
         addWall(newWall);
-        // Optionally, call updateRooms() here if implemented
         useFloorplanStore.getState().setEditorMode(EditorMode.MOVE);
         setDrawingState({ lastNode: null, targetX: 0, targetY: 0, firstCorner: null });
-      } else {
-        // Add new corner and wall as usual
-        const newCorner: Corner = {
-          id: `corner-${Date.now()}`,
-          x: drawingState.targetX,
-          y: drawingState.targetY,
-          adjacentWalls: []
-        };
-        addCorner(newCorner);
-        const newWall: Wall = {
-          id: `wall-${Date.now()}`,
-          startCorner: drawingState.lastNode.id,
-          endCorner: newCorner.id,
-          thickness: 10,
-          height: 250
-        };
-        addWall(newWall);
-        setDrawingState(prev => ({ ...prev, lastNode: newCorner }));
+      } else if (drawingState.lastNode) {
+        // If lastNode is set, allow drawing to any point (existing or new)
+        if (clickedCorner) {
+          // Continue drawing from any existing corner (not closing)
+          const newWall: Wall = {
+            id: `wall-${Date.now()}`,
+            startCorner: drawingState.lastNode.id,
+            endCorner: clickedCorner.id,
+            thickness: 10,
+            height: 250
+          };
+          addWall(newWall);
+          setDrawingState(prev => ({ ...prev, lastNode: clickedCorner, targetX: clickedCorner.x, targetY: clickedCorner.y }));
+        } else {
+          // Add new corner and wall as usual
+          const newCorner: Corner = {
+            id: `corner-${Date.now()}`,
+            x: drawingState.targetX,
+            y: drawingState.targetY,
+            adjacentWalls: []
+          };
+          addCorner(newCorner);
+          const newWall: Wall = {
+            id: `wall-${Date.now()}`,
+            startCorner: drawingState.lastNode.id,
+            endCorner: newCorner.id,
+            thickness: 10,
+            height: 250
+          };
+          addWall(newWall);
+          setDrawingState(prev => ({ ...prev, lastNode: newCorner, targetX: newCorner.x, targetY: newCorner.y }));
+        }
       }
     }
 
@@ -283,7 +390,8 @@ export default function FloorplanEditor({ className }: FloorplanEditorProps) {
       ...prev,
       isDown: false
     }));
-  }, [editorMode, mouseState.hasMoved, drawingState.targetX, drawingState.targetY, drawingState.lastNode, drawingState.firstCorner, addCorner, addWall]);
+    setDraggedWallId(null);
+  }, [editorMode, mouseState.hasMoved, drawingState.targetX, drawingState.targetY, drawingState.lastNode, drawingState.firstCorner, addCorner, addWall, findCornerAt]);
 
     // Handle mouse wheel for zooming
   const handleWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
